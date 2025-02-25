@@ -1,0 +1,204 @@
+import requests
+import subprocess
+import yaml
+import time
+from datetime import datetime
+import os
+
+MATTERMOST_WEBHOOK_URL = "XXX"
+
+RECORD_FILE = "/home/rayhuang111/monitor_record.yaml"
+LOG_FILE = "/home/rayhuang111/monitor.log"
+
+ALERT_COOLDOWN = 3600  # 1 hour in seconds
+
+class BaseMonitor:
+    def __init__(self, job_name):
+        self.record_file = RECORD_FILE
+        self.log_file = LOG_FILE
+        self.job_name = job_name
+        # if log file not exists, create it
+        if not os.path.exists(LOG_FILE):
+            open(LOG_FILE, "a").close()
+        # if record file not exists, create it
+        if not os.path.exists(RECORD_FILE):
+            open(RECORD_FILE, "a").close()
+
+    def log(self, message):
+        """Logs the message to a log file."""
+        with open(LOG_FILE, "a") as f:
+            f.write(f"[{datetime.now()}] {message}\n")
+
+    def send_notification(self, webhookMsg, webhookEmoji):
+        """Sends a notification to mattermost."""
+        webhookUsername="cron-Monitor"
+        webhookColor = "#FF0000" if webhookEmoji=="🔥" else "#4DFF4D"
+        self.log(f"Sending notification: {webhookMsg}")
+        try:
+            payload = {
+                "username": webhookUsername,
+                "attachments": [
+                    {
+                        "title": webhookEmoji + webhookMsg,
+                        "color": webhookColor,
+                    }
+                ],
+            }
+            response = requests.post(MATTERMOST_WEBHOOK_URL, json=payload)
+            if response.status_code == 200:
+                self.log(f"Notification sent successfully: {webhookMsg}")
+            else:
+                self.log(f"Failed to send notification: {response.status_code}")
+        except Exception as e:
+            self.log(f"Error while sending notification: {e}")
+
+    def send_alert(self, message):
+        """Sends an alert to mattermost."""
+        if self.check_alert_cooldown():
+            self.send_notification(f"Alert: {message}", "🔥")
+            self.update_alert_time()
+
+    def send_recover(self, message):
+        """Sends a recover notification to mattermost."""
+        self.send_notification(f"Recovered: {message}", "✅")
+
+    def load_record(self):
+        """Loads monitoring records from YAML."""
+        if os.path.exists(self.record_file):
+            with open(self.record_file, "r") as f:
+                return yaml.safe_load(f) or {}
+        return {}
+
+    def save_record(self, data):
+        """Saves monitoring records to YAML."""
+        with open(self.record_file, "w") as f:
+            yaml.dump(data, f)
+
+    def check_recovery(self, func_name):
+        """Checks if the service has recovered from failure."""
+        data = self.load_record()
+        key = f"{self.job_name}.{func_name}"
+        if data.get(key, {}).get("fail_count", 0) > 0:
+            self.log(f"Service recovery detected: {key}")
+            self.send_recover(f"{key} has recovered.")
+            data[key]["fail_count"] = 0  # Reset failure count
+            data[key]["last_alert"] = 0  # Reset alert cooldown
+            self.save_record(data)
+
+    def check_alert_cooldown(self, func_name):
+        """Ensures alerts are sent at least 1 hour apart per function."""
+        data = self.load_record()
+        key = f"{self.job_name}.{func_name}"
+        last_alert_time = data.get(key, {}).get("last_alert", 0)
+        return (time.time() - last_alert_time) > ALERT_COOLDOWN
+
+    def update_alert_time(self, func_name):
+        """Updates the last alert timestamp."""
+        data = self.load_record()
+        key = f"{self.job_name}.{func_name}"
+        data.setdefault(key, {})["last_alert"] = time.time()
+        self.save_record(data)
+
+    def record_failure(self, func_name):
+        """Records a failure event in the YAML file."""
+        data = self.load_record()
+        key = f"{self.job_name}.{func_name}"
+        data.setdefault(key, {"fail_count": 0, "last_alert": 0})
+        data[key]["fail_count"] += 1
+        self.save_record(data)
+
+    def execute_command(self, command, func_name):
+        """Runs shell commands and returns the output."""
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
+            self.log(f"Command executed: {command}")
+            self.check_recovery(func_name)
+            return result.stdout.strip()
+        # if return code is not 0, send alert
+        except subprocess.CalledProcessError as e:
+            self.log(f"Command failed: {e}")
+            self.record_failure(func_name)
+            self.send_alert(f"Command failed: {e}")
+            return None
+
+    def execute_command_measure_time(self, command, func_name, timeout):
+        """Runs shell commands and returns the output and execution time."""
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True, timeout=timeout)
+            self.log(f"Command with timeout executed: {command}")
+            self.check_recovery(func_name)
+            return result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            self.log(f"Command failed: {e}")
+            self.record_failure(func_name)
+            self.send_alert(f"Command failed: {e}")
+            return None
+        except subprocess.TimeoutExpired:
+            self.log(f"{command} took longer than {timeout} seconds to execute.")
+            self.record_failure(func_name)
+            self.send_alert(f"Timeout! {command} took longer than {timeout} seconds to execute.")
+            return None
+
+class FSMonitor(BaseMonitor):
+    def __init__(self):
+        super().__init__("FS_Monitor")
+
+    def check_fs_mount_time(self):
+        """Checks fs mount situation."""
+        cmd = "df -h"
+        max_time = 0.25
+        self.execute_command_measure_time(cmd, "check_fs_mount_time", max_time)
+
+    def check_mount_ls_time(self):
+        """Checks mount ls situation."""
+        mount_points = ["/work1", "/work2", "/project", "/pkg", "/home"]
+        max_time = 1
+        for mount_point in mount_points:
+            cmd = f"ls {mount_point}"
+            self.execute_command_measure_time(cmd, "check_mount_ls_time", max_time)
+
+class SlurmMonitor(BaseMonitor):
+    def __init__(self):
+        super().__init__("Slurm_Monitor")
+
+    def check_sinfo_time(self):
+        """Checks the time to run sinfo."""
+        return self.execute_command_measure_time("sinfo", "check_sinfo_time", 2)
+
+    def check_slurmctld_status(self):
+        """Checks the status of slurmctld."""
+        ctld_hosts = ["isn01", "isn09"]
+        for host in ctld_hosts:
+            cmd = f"nc -z {host} 6817"
+            self.execute_command(cmd, "check_slurmctld_status")
+
+class CPUMonitor(BaseMonitor):
+    def __init__(self):
+        super().__init__("CPU_Monitor")
+
+    def check_loading(self):
+        """Checks the CPU loading."""
+        return self.execute_command("uptime", "check_loading")
+
+class MemoryMonitor(BaseMonitor):
+    def __init__(self):
+        super().__init__("Memory_Monitor")
+
+    def check_memory_usage(self):
+        """Checks the memory usage."""
+        return self.execute_command("free -h", "check_memory_usage")
+
+
+if __name__ == "__main__":
+    # ml tools/miniconda3
+    # conda activate monit
+    FSM = FSMonitor()
+    FSM.check_fs_mount_time()
+    FSM.check_mount_ls_time()
+
+    SM = SlurmMonitor()
+    SM.check_sinfo_time()
+    SM.check_slurmctld_status()
+
+    # BaseMonitor().send_alert("Test alert")
+    # BaseMonitor().send_recover("Test recover")
