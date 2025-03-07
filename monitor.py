@@ -5,7 +5,7 @@ import time
 from datetime import datetime
 import os
 
-MATTERMOST_WEBHOOK_URL = "XXX"
+MATTERMOST_WEBHOOK_URL = ""
 
 RECORD_FILE = "/home/rayhuang111/monitor_record.yaml"
 LOG_FILE = "/home/rayhuang111/monitor.log"
@@ -54,9 +54,7 @@ class BaseMonitor:
 
     def send_alert(self, message):
         """Sends an alert to mattermost."""
-        if self.check_alert_cooldown():
-            self.send_notification(f"Alert: {message}", "🔥")
-            self.update_alert_time()
+        self.send_notification(f"Alert: {message}", "🔥")
 
     def send_recover(self, message):
         """Sends a recover notification to mattermost."""
@@ -118,7 +116,9 @@ class BaseMonitor:
         except subprocess.CalledProcessError as e:
             self.log(f"Command failed: {e}")
             self.record_failure(func_name)
-            self.send_alert(f"Command failed: {e}")
+            if self.check_alert_cooldown(func_name):
+                self.send_alert(f"Command failed: {e}")
+                self.update_alert_time(func_name)
             return None
 
     def execute_command_measure_time(self, command, func_name, timeout):
@@ -131,12 +131,16 @@ class BaseMonitor:
         except subprocess.CalledProcessError as e:
             self.log(f"Command failed: {e}")
             self.record_failure(func_name)
-            self.send_alert(f"Command failed: {e}")
+            if self.check_alert_cooldown(func_name):
+                self.send_alert(f"Command failed: {e}")
+                self.update_alert_time(func_name)
             return None
         except subprocess.TimeoutExpired:
             self.log(f"{command} took longer than {timeout} seconds to execute.")
             self.record_failure(func_name)
-            self.send_alert(f"Timeout! {command} took longer than {timeout} seconds to execute.")
+            if self.check_alert_cooldown(func_name):
+                self.send_alert(f"Timeout! {command} took longer than {timeout} seconds to execute.")
+                self.update_alert_time(func_name)
             return None
 
 class FSMonitor(BaseMonitor):
@@ -186,7 +190,7 @@ class MemoryMonitor(BaseMonitor):
 
     def check_memory_usage(self):
         """Checks the memory usage."""
-        return self.execute_command("free -h", "check_memory_usage")
+        return self.execute_command("free", "check_memory_usage")
 
 
 if __name__ == "__main__":
@@ -199,6 +203,3 @@ if __name__ == "__main__":
     SM = SlurmMonitor()
     SM.check_sinfo_time()
     SM.check_slurmctld_status()
-
-    # BaseMonitor().send_alert("Test alert")
-    # BaseMonitor().send_recover("Test recover")
