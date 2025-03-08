@@ -72,13 +72,14 @@ class BaseMonitor:
         with open(self.record_file, "w") as f:
             yaml.dump(data, f)
 
-    def check_recovery(self, func_name):
+    def check_recovery(self, func_name, threshold):
         """Checks if the service has recovered from failure."""
         data = self.load_record()
         key = f"{self.job_name}.{func_name}"
         if data.get(key, {}).get("fail_count", 0) > 0:
             self.log(f"Service recovery detected: {key}")
-            self.send_recover(f"{key} has recovered.")
+            if data[key]["fail_count"] >= threshold:
+                self.send_recover(f"{key} has recovered.")
             data[key]["fail_count"] = 0  # Reset failure count
             data[key]["last_alert"] = 0  # Reset alert cooldown
             self.save_record(data)
@@ -105,40 +106,49 @@ class BaseMonitor:
         data[key]["fail_count"] += 1
         self.save_record(data)
 
-    def execute_command(self, command, func_name):
-        """Runs shell commands and returns the output."""
+    def get_failure_count(self, func_name):
+        """Returns the failure count of a function."""
+        data = self.load_record()
+        key = f"{self.job_name}.{func_name}"
+        return data.get(key, {}).get("fail_count", 0)
+
+    def execute_command(self, command, func_name, fail_threshold=1):
+        """Runs shell commands and check return code."""
         try:
             result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True)
             self.log(f"Command executed: {command}")
-            self.check_recovery(func_name)
+            self.check_recovery(func_name, fail_threshold)
             return result.stdout.strip()
         # if return code is not 0, send alert
         except subprocess.CalledProcessError as e:
             self.log(f"Command failed: {e}")
             self.record_failure(func_name)
-            if self.check_alert_cooldown(func_name):
+            fail_count = self.get_failure_count(func_name)
+            if self.check_alert_cooldown(func_name) and fail_count >= fail_threshold:
                 self.send_alert(f"Command failed: {e}")
                 self.update_alert_time(func_name)
             return None
 
-    def execute_command_measure_time(self, command, func_name, timeout):
-        """Runs shell commands and returns the output and execution time."""
+    def execute_command_with_timeout(self, command, func_name, timeout, fail_threshold=1):
+        """Runs shell commands and check return code and execution time."""
         try:
             result = subprocess.run(command, shell=True, capture_output=True, text=True, check=True, timeout=timeout)
             self.log(f"Command with timeout executed: {command}")
-            self.check_recovery(func_name)
+            self.check_recovery(func_name, fail_threshold)
             return result.stdout.strip()
         except subprocess.CalledProcessError as e:
             self.log(f"Command failed: {e}")
             self.record_failure(func_name)
-            if self.check_alert_cooldown(func_name):
+            fail_count = self.get_failure_count(func_name)
+            if self.check_alert_cooldown(func_name) and fail_count >= fail_threshold:
                 self.send_alert(f"Command failed: {e}")
                 self.update_alert_time(func_name)
             return None
         except subprocess.TimeoutExpired:
             self.log(f"{command} took longer than {timeout} seconds to execute.")
             self.record_failure(func_name)
-            if self.check_alert_cooldown(func_name):
+            fail_count = self.get_failure_count(func_name)
+            if self.check_alert_cooldown(func_name) and fail_count >= fail_threshold:
                 self.send_alert(f"Timeout! {command} took longer than {timeout} seconds to execute.")
                 self.update_alert_time(func_name)
             return None
@@ -151,7 +161,7 @@ class FSMonitor(BaseMonitor):
         """Checks fs mount situation."""
         cmd = "df -h"
         max_time = 0.25
-        self.execute_command_measure_time(cmd, "check_fs_mount_time", max_time)
+        self.execute_command_with_timeout(cmd, "check_fs_mount_time", max_time)
 
     def check_mount_ls_time(self):
         """Checks mount ls situation."""
@@ -159,7 +169,7 @@ class FSMonitor(BaseMonitor):
         max_time = 1
         for mount_point in mount_points:
             cmd = f"ls {mount_point}"
-            self.execute_command_measure_time(cmd, "check_mount_ls_time", max_time)
+            self.execute_command_with_timeout(cmd, "check_mount_ls_time", max_time)
 
 class SlurmMonitor(BaseMonitor):
     def __init__(self):
@@ -167,7 +177,8 @@ class SlurmMonitor(BaseMonitor):
 
     def check_sinfo_time(self):
         """Checks the time to run sinfo."""
-        return self.execute_command_measure_time("sinfo", "check_sinfo_time", 2)
+        max_time = 1
+        return self.execute_command_with_timeout("sinfo", "check_sinfo_time", max_time, 5)
 
     def check_slurmctld_status(self):
         """Checks the status of slurmctld."""
