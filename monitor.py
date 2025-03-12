@@ -180,12 +180,24 @@ class SlurmMonitor(BaseMonitor):
         max_time = 1
         return self.execute_command_with_timeout("sinfo", "check_sinfo_time", max_time, 5)
 
+    def check_sacct_time(self):
+        """Checks the time to run sacct."""
+        max_time = 1
+        return self.execute_command_with_timeout("sacct", "check_sacct_time", max_time, 1)
+
     def check_slurmctld_status(self):
         """Checks the status of slurmctld."""
         ctld_hosts = ["isn01", "isn09"]
         for host in ctld_hosts:
             cmd = f"nc -z {host} 6817"
             self.execute_command(cmd, "check_slurmctld_status")
+
+    def check_slurmdbd_status(self):
+        """Checks the status of slurmdbd."""
+        dbd_hosts = ["isn01", "isn09"]
+        for host in dbd_hosts:
+            cmd = f"nc -z {host} 6819"
+            self.execute_command(cmd, "check_slurmdbd_status")
 
 class CPUMonitor(BaseMonitor):
     def __init__(self):
@@ -214,3 +226,4 @@ if __name__ == "__main__":
     SM = SlurmMonitor()
     SM.check_sinfo_time()
     SM.check_slurmctld_status()
+    SM.check_sacct_time()
