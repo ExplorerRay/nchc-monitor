@@ -2,4 +2,5 @@
 
 ml tools/miniconda3
 conda activate monit
-python3 monitor.py
+username=$(whoami)
+/home/${username}/.conda/envs/monit/bin/python3 /home/${username}/nchc-monitor/monitor.py
