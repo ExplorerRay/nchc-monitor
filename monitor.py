@@ -13,6 +13,7 @@ LOG_FILE = "/home/rayhuang111/monitor.log"
 ALERT_COOLDOWN = 3600  # 1 hour in seconds
 
 class BaseMonitor:
+    # init monitor, set and create record file and log file
     def __init__(self, job_name):
         self.record_file = RECORD_FILE
         self.log_file = LOG_FILE
@@ -24,11 +25,13 @@ class BaseMonitor:
         if not os.path.exists(RECORD_FILE):
             open(RECORD_FILE, "a").close()
 
+    # log message for debugging this monitor.py
     def log(self, message):
         """Logs the message to a log file."""
         with open(LOG_FILE, "a") as f:
             f.write(f"[{datetime.now()}] {message}\n")
 
+    # call webhook to send notification to mattermost
     def send_notification(self, webhookMsg, webhookEmoji):
         """Sends a notification to mattermost."""
         webhookUsername="cron-Monitor"
@@ -60,6 +63,8 @@ class BaseMonitor:
         """Sends a recover notification to mattermost."""
         self.send_notification(f"Recovered: {message}", "✅")
 
+    # 因為 cronjob 不會有上次執行的狀態，所以將狀態寫入 yaml 檔案 (record) 中
+    # 用此方法處理 alert cooldown、fail threshold、recovery 等機制
     def load_record(self):
         """Loads monitoring records from YAML."""
         if os.path.exists(self.record_file):
@@ -112,6 +117,10 @@ class BaseMonitor:
         key = f"{self.job_name}.{func_name}"
         return data.get(key, {}).get("fail_count", 0)
 
+    # 執行 shell command，並檢查 return code
+    # command: 要執行的 shell command
+    # func_name: 用來記錄錯誤次數的 key
+    # fail_threshold: 超過此次數才會發送 alert
     def execute_command(self, command, func_name, fail_threshold=1):
         """Runs shell commands and check return code."""
         try:
@@ -129,6 +138,8 @@ class BaseMonitor:
                 self.update_alert_time(func_name)
             return None
 
+    # 執行 shell command，並檢查 return code 和執行時間
+    # timeout: command 執行時間上限
     def execute_command_with_timeout(self, command, func_name, timeout, fail_threshold=1):
         """Runs shell commands and check return code and execution time."""
         try:
@@ -183,7 +194,7 @@ class SlurmMonitor(BaseMonitor):
     def check_sacct_time(self):
         """Checks the time to run sacct."""
         max_time = 1
-        return self.execute_command_with_timeout("sacct", "check_sacct_time", max_time, 1)
+        return self.execute_command_with_timeout("sacct", "check_sacct_time", max_time, 3)
 
     def check_slurmctld_status(self):
         """Checks the status of slurmctld."""
@@ -194,7 +205,7 @@ class SlurmMonitor(BaseMonitor):
 
     def check_slurmdbd_status(self):
         """Checks the status of slurmdbd."""
-        dbd_hosts = ["isn01", "isn09"]
+        dbd_hosts = ["isn01"]
         for host in dbd_hosts:
             cmd = f"nc -z {host} 6819"
             self.execute_command(cmd, "check_slurmdbd_status")
@@ -227,3 +238,4 @@ if __name__ == "__main__":
     SM.check_sinfo_time()
     SM.check_slurmctld_status()
     SM.check_sacct_time()
+    SM.check_slurmdbd_status()
